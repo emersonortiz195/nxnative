@@ -10524,7 +10524,17 @@ static id<MTLBuffer> gmem_map(void) {
     for (int k = 1; k < DMSH_GMEM_MAP_ENTRIES; k++) memset(t + (size_t)k * DMSH_GMEM_MAP_ENTRY, 0xff, 8);
     int n = 1, over = 0; uint64_t end = 0;
     pthread_mutex_lock(&g_mu);
-    for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b, 0); if (n >= 0) g_big[k].full = n + 1; }   // the pool table reaches all of a large pool
+    // Experimental M2 memory test: avoid eagerly wiring entire large pools.
+    // WARNING: raw shader accesses outside existing chunks may be unmapped.
+    // Disabled by default; enable only for controlled testing.
+    static int m2_no_full_pool = -1;
+    if (m2_no_full_pool < 0) {
+        const char *e = getenv("DM_M2_NO_FULL_POOL");
+        m2_no_full_pool = e && atoi(e) != 0;
+    }
+    if (!m2_no_full_pool) {
+        for (int k = 0; k < g_nbig; k++) if (!g_big[k].full && addr_meets(g_big[k].lo, g_big[k].hi)) { int n = big_new(&g_big[k], g_big[k].a, g_big[k].b, g_big[k].b, 0); if (n >= 0) g_big[k].full = n + 1; }
+    }   // the pool table reaches all of a large pool
     gen = atomic_load(&g_pool_gen); pidx_sort();
     for (int k = 0; k < g_npool; k++) {
         pool_ent *p = &g_pools[g_pidx[k]];
