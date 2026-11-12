@@ -12,6 +12,8 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
+#include <dispatch/dispatch.h>
+#include "nvn_mem_guard.h"
 #include <fcntl.h>
 #include <TargetConditionals.h>
 #include <os/os_sync_wait_on_address.h>   // the uniform copy hand-off (nvn_rec.h ubc_wait)
@@ -273,6 +275,7 @@ static void ws_report(uint64_t frame, uint64_t frames) {
 }
 #include "nvn_rec.h"   // deferred encoding (DM_NVN_ENC_THREAD)
 static NSHashTable *g_res_objects;
+static NSHashTable *g_mem_guard_committed; // weak snapshot, under g_res_mu; diagnostics must not extend allocation lifetimes
 static _Atomic unsigned g_image_heap_n, g_big_n;   // g_big_n: large pools in chunks, whose buffers overlap (BIG_MIN)
 static inline MTL4VisibilityOptions resource_vis(void) { return MTL4VisibilityOptionDevice | (g_image_heap_n || g_big_n ? MTL4VisibilityOptionResourceAlias : 0); }
 // Residency churn by call site (the power line every 300 frames, mtl_res_stats): each commit with changes is a kernel call whose cost grows with what was added or removed
@@ -438,11 +441,74 @@ static void res_check(id r, const char *what, int reg) {
         MLOG("[RED] missing residency #%d: %s slot %d %s %p (parent chain %d deep) allocated %lu B storage mode %lu%s", nbad, what, reg, is_tex ? "texture" : "buffer", (__bridge void *)a, hops, (unsigned long)a.allocatedSize, (unsigned long)a.storageMode,
              t ? [NSString stringWithFormat:@" format %lu %lux%lu type %lu usage %#lx", (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.textureType, (unsigned long)t.usage].UTF8String : ""); }
 }
-static void res_commit(void) {
-    pthread_mutex_lock(&g_res_mu);
-    if (g_res_dirty) { uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); [g_res commit]; g_res_dirty = 0; g_rs_commits++; g_rs_commit_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0; }
-    pthread_mutex_unlock(&g_res_mu);
+// Opt-in diagnostics only. Logical allocation bytes can overlap (no-copy buffers),
+// and are not unique physical memory. The timer never takes a renderer lock.
+static int g_mem_guard;
+static uint64_t g_mem_guard_limit, g_mem_guard_physical;
+static _Atomic uint64_t g_mem_guard_resident;
+static void mem_guard_check(uint64_t resident) {
+    int level = 0; size_t n = sizeof level;
+    int valid = !sysctlbyname("kern.memorystatus_level", &level, &n, NULL, 0) && n == sizeof level && level >= 0 && level <= 100;
+    if (nvn_mem_guard_over(resident, g_mem_guard_limit) ||
+        (valid && nvn_mem_guard_low(g_mem_guard_physical, level, 1024ull << 20)))
+        { static _Atomic int warned; if (!atomic_exchange(&warned, 1)) MLOG("GPU memory diagnostic warning: logical allocations %llu MB, warning threshold %llu MB, memorystatus estimate %d%% (valid %d); logical bytes are not unique physical memory",
+             (unsigned long long)(resident >> 20), (unsigned long long)(g_mem_guard_limit >> 20), level, valid); }
+    if (!valid) { static _Atomic int warned; if (!atomic_exchange(&warned, 1)) MLOG("GPU memory diagnostic warning: memorystatus estimate unavailable; logical allocation checks remain active"); }
 }
+static void mem_guard_init(void) {
+#if !TARGET_OS_IPHONE
+    const char *e = getenv("DM_NVN_MEMORY_GUARD");
+    if (!e || strcmp(e, "1")) return;
+    g_mem_guard_limit = nvn_mem_guard_limit(g_dev.recommendedMaxWorkingSetSize);
+    size_t n = sizeof g_mem_guard_physical;
+    if (sysctlbyname("hw.memsize", &g_mem_guard_physical, &n, NULL, 0) || n != sizeof g_mem_guard_physical)
+        g_mem_guard_physical = 0; // disable only the percentage-derived headroom warning
+    if (!g_mem_guard_physical) MLOG("GPU memory diagnostic warning: physical memory size unavailable; percentage-derived headroom check disabled");
+    if (!g_mem_guard_limit) MLOG("GPU memory diagnostic warning: recommended working set unavailable; logical allocation threshold disabled");
+    g_mem_guard = 1;
+    mem_guard_check(0);
+    static dispatch_source_t timer;
+    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    if (!timer) { MLOG("GPU memory diagnostic warning: cannot create timer; commit checks remain active"); return; }
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), 100 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer, ^{ mem_guard_check(atomic_load(&g_mem_guard_resident)); });
+    dispatch_resume(timer);
+    MLOG("GPU memory diagnostics: enabled; logical allocation warning threshold %llu MB, approximate system margin 1024 MB; memorystatus_level is an integer percentage estimate, not exact available bytes", (unsigned long long)(g_mem_guard_limit >> 20));
+#endif
+}
+static void res_commit(void) { @autoreleasepool {
+    // Keep every scanned allocation alive through unlock: ARC may release loop
+    // variables early, and a final release can re-enter res_remove (heap owner).
+    // The local pool also bounds weak-table temporaries on guest threads.
+    __attribute__((objc_precise_lifetime)) NSArray *committed = nil, *pending = nil;
+    pthread_mutex_lock(&g_res_mu);
+    if (g_mem_guard) {
+        committed = g_mem_guard_committed.allObjects;
+        pending = g_res_objects.allObjects;
+        // Count each live allocation once across the committed and pending sets.
+        // Weak snapshots preserve normal lifetimes; removed, deallocated objects vanish.
+        uint64_t resident = 0;
+        for (id<MTLAllocation> r in committed)
+            resident = nvn_mem_guard_add(resident, r.allocatedSize);
+        for (id<MTLAllocation> r in pending)
+            resident = nvn_mem_guard_add(resident, nvn_mem_guard_extra(r.allocatedSize, [g_mem_guard_committed containsObject:r]));
+        atomic_store(&g_mem_guard_resident, resident);
+        mem_guard_check(resident);
+    }
+    if (g_res_dirty) { uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); [g_res commit];
+        if (g_mem_guard) {
+            if (!g_mem_guard_committed) g_mem_guard_committed = [NSHashTable weakObjectsHashTable];
+            [g_mem_guard_committed removeAllObjects];
+            uint64_t logical = 0;
+            for (id<MTLAllocation> r in pending) {
+                [g_mem_guard_committed addObject:r];
+                logical = nvn_mem_guard_add(logical, r.allocatedSize);
+            }
+            atomic_store(&g_mem_guard_resident, logical);
+        }
+        g_res_dirty = 0; g_rs_commits++; g_rs_commit_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0; }
+    pthread_mutex_unlock(&g_res_mu);
+} }
 // What the residency set holds: totals by kind and the largest objects. At the first GPU out-of-memory error (the error names none of them), and for DM_CTL "restop" (hle_hid.c). The set holds
 // the game's pools (shared buffers over guest memory), textures, heaps and staging alike
 static void res_top(const char *why) { @autoreleasepool {
@@ -693,6 +759,7 @@ void mtl_init(void) {
     // BC textures are created and uploaded as BC, with no decompression path (dm/gfx/tex/README.md); without BC the first one aborts in Metal's descriptor validation mid-game
     // (GitHub issue #704: an iPhone 15, A16). The iOS front end refuses such a device before the launcher (main.m); this stops every other route at the device, with the reason
     if (!g_dev.supportsBCTextureCompression) MDIE("the Metal device %s has no BC texture formats, which the games' textures use and the host does not decompress: an iPhone needs an A17 Pro or later, an iPad an M1 or later", g_dev.name.UTF8String);
+    mem_guard_init();
     [g_q addResidencySet:g_res];
     [g_q4 addResidencySet:g_res];
     { void crash_set_wait_dump(void (*fn)(void)); void mtl_wait_state_dump(void); crash_set_wait_dump(mtl_wait_state_dump); }
