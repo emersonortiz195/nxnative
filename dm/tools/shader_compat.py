@@ -3,7 +3,8 @@
 
 Pass b-<chain> or b-<chain>.img, not DM_MSL_DIR's parent directory.
 Success checks metadata and file presence only, not Metal loadability, entry
-points, reflection ABI validity, shader-map coverage or gameplay correctness.
+points, reflection ABI validity or gameplay correctness. Map coverage is checked
+only when --shader-map is supplied; optional uniform-table checks are warnings.
 """
 import argparse
 import json
@@ -24,7 +25,24 @@ def header_chain(path):
     return matches[0]
 
 
-def audit(lib, chain, game, inputs=None, keys=()):
+def map_keys(path):
+    """Read control-section keys from the same TSV column the host uses."""
+    keys = set()
+    for number, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip() or line.startswith('#'):
+            continue
+        fields = line.split('\t')
+        if len(fields) >= 4 and fields[3] == 'dm_ctl_sha16':
+            continue
+        if len(fields) < 4 or not re.fullmatch('[0-9a-f]{16}', fields[3]):
+            raise ValueError(f'{path}:{number}: invalid shader-map key row')
+        keys.add(fields[3])
+    if not keys:
+        raise ValueError(f'{path}: shader map contains no keys')
+    return keys
+
+
+def audit(lib, chain, game, inputs=None, keys=(), tables_dir=None):
     """Inspect the folder-first overlay the host reads, including partial builds.
 
     Only the image index and JSON/stamp bytes are read; metallibs are stat'ed.
@@ -53,6 +71,7 @@ def audit(lib, chain, game, inputs=None, keys=()):
     names = sorted(n for n in files if SHADER.fullmatch(n))
     if not names:
         errors.append('no base shader reflection files found')
+    keys = sorted(set(keys))
     for key in keys:
         if key + '_b.json' not in files:
             errors.append(f'{key}: requested shader reflection missing')
@@ -72,9 +91,26 @@ def audit(lib, chain, game, inputs=None, keys=()):
         metal = name[:-5] + '.metallib'
         if not folded and (metal not in files or files[metal].stat().st_size == 0):
             errors.append(f'{metal}: missing or empty base library')
+    warnings, tables = [], {}
+    if tables_dir is not None:
+        # Match shmap_read's literal prefix, including the space after inputs.
+        # Missing/stale tables select conservative host fallbacks, not bad shaders.
+        prefix = f'# chain b-{chain} inputs {stamp.get("inputs") or "-"} '
+        for name in ('c1_full.tsv', 'cb_extent.tsv'):
+            path = Path(tables_dir) / name
+            try:
+                with path.open() as stream:
+                    head = stream.readline().rstrip('\r\n')
+            except FileNotFoundError:
+                tables[name] = 'missing'
+            else:
+                tables[name] = 'accepted' if stamp.get('inputs') and head.startswith(prefix) else 'stale'
+            if tables[name] != 'accepted':
+                warnings.append(f'{name}: {tables[name]}; host uses conservative uniform fallback')
     return {'chain': chain, 'game': game, 'inputs': stamp.get('inputs'),
-            'shaders_checked': len(names), 'errors': errors,
-            'scope': 'metadata and base file presence only; Metal and gameplay untested'}
+            'shaders_checked': len(names), 'required_keys': len(keys), 'errors': errors,
+            'tables': tables, 'warnings': warnings,
+            'scope': 'metadata and base file presence only; Metal, side libraries and gameplay untested'}
 
 
 def main():
@@ -87,6 +123,8 @@ def main():
     parser.add_argument('--game', required=True)
     parser.add_argument('--inputs', help='expected profile inputs digest (optional)')
     parser.add_argument('--key', action='append', default=[], help='required base shader key; repeatable')
+    parser.add_argument('--shader-map', type=Path, help='require base reflection for every key in this TSV')
+    parser.add_argument('--tables-dir', type=Path, help='report host acceptance of c1_full.tsv and cb_extent.tsv')
     args = parser.parse_args()
     try:
         chain = args.chain or header_chain(args.host_header)
@@ -94,7 +132,10 @@ def main():
             raise ValueError('chain must be 12 lowercase hexadecimal digits')
         if any(not re.fullmatch('[0-9a-f]{16}', k) for k in args.key):
             raise ValueError('keys must be 16 lowercase hexadecimal digits')
-        result = audit(args.library, chain, args.game, args.inputs, args.key)
+        keys = set(args.key)
+        if args.shader_map:
+            keys.update(map_keys(args.shader_map))
+        result = audit(args.library, chain, args.game, args.inputs, keys, args.tables_dir)
     except (OSError, ValueError) as exc:
         parser.exit(2, f'preflight could not inspect library: {exc}\n')
     print(json.dumps(result, indent=2))

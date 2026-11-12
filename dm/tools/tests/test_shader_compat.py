@@ -101,6 +101,69 @@ class Compatibility(unittest.TestCase):
         self.image()
         self.assertTrue(self.audit()['errors'])
 
+    def test_shader_map_uses_control_key_column_and_deduplicates(self):
+        mapping = self.root / 'shader_map.tsv'
+        mapping.write_text('# comment\npackage\tindex\tstage\tdm_ctl_sha16\tsource\n'
+                           f'a.bin\t0\tpixel\t{KEY}\tsource\n'
+                           f'b.bin\t1\tvertex\t{KEY}\tother source\n')
+        self.assertEqual(shader_compat.map_keys(mapping), {KEY})
+        self.image()
+        self.assertEqual(self.audit(keys=shader_compat.map_keys(mapping))['required_keys'], 1)
+        with mapping.open('a') as stream:
+            stream.write('c.bin\t2\tpixel\tffffffffffffffff\tsource\n')
+        result = self.audit(keys=shader_compat.map_keys(mapping))
+        self.assertTrue(any('ffffffffffffffff' in e for e in result['errors']))
+
+    def test_invalid_or_empty_shader_map_is_not_silent_success(self):
+        mapping = self.root / 'shader_map.tsv'
+        for data in ('', '# no shaders\n', 'broken\n', 'p\t0\tpixel\tnot-a-key\n'):
+            with self.subTest(data=data):
+                mapping.write_text(data)
+                with self.assertRaises(ValueError):
+                    shader_compat.map_keys(mapping)
+
+    def test_uniform_tables_match_literal_host_prefix(self):
+        self.image()
+        for name in ('c1_full.tsv', 'cb_extent.tsv'):
+            (self.root / name).write_text(f'# chain b-{OLD} inputs stamp generated\nkey\tvalue\n')
+        result = self.audit(tables_dir=self.root)
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual(set(result['tables'].values()), {'accepted'})
+        for header in (f'# chain b-{NEW} inputs stamp generated',
+                       f'# chain b-{OLD} inputs stamp2 generated',
+                       f'# chain b-{OLD} inputs stamp', ''):
+            with self.subTest(header=header):
+                (self.root / 'cb_extent.tsv').write_text(header + '\n')
+                result = self.audit(tables_dir=self.root)
+                self.assertEqual(result['tables']['cb_extent.tsv'], 'stale')
+                self.assertEqual(len(result['warnings']), 1)
+                self.assertEqual(result['errors'], [])  # host fallback remains valid
+
+    def test_missing_tables_are_warnings_not_shader_failures(self):
+        self.image()
+        result = self.audit(tables_dir=self.root)
+        self.assertEqual(len(result['warnings']), 2)
+        self.assertEqual(result['errors'], [])
+        del self.files['inputs.tsv']
+        self.image()
+        (self.root / 'c1_full.tsv').write_text(f'# chain b-{OLD} inputs - generated\n')
+        self.assertEqual(self.audit(tables_dir=self.root)['tables']['c1_full.tsv'], 'stale')
+
+    def test_cli_shader_map_detects_partial_archive(self):
+        self.image()
+        mapping = self.root / 'shader_map.tsv'
+        mapping.write_text(f'p\t0\tpixel\t{KEY}\nq\t1\tpixel\tffffffffffffffff\n')
+        command = [sys.executable, str(TOOLS / 'shader_compat.py'), str(self.lib),
+                   '--game', GAME, '--chain', OLD, '--shader-map', str(mapping),
+                   '--tables-dir', str(self.root)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['required_keys'], 2)
+        self.assertEqual(len(data['warnings']), 2)
+        mapping.write_text('bad')
+        self.assertEqual(subprocess.run(command, capture_output=True).returncode, 2)
+
     def test_cli_status_and_header(self):
         self.image()
         header = self.root / 'chain.h'
