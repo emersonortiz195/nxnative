@@ -10,7 +10,11 @@
 static pthread_mutex_t g_res_mu = PTHREAD_MUTEX_INITIALIZER;
 // Return snapshots at +1, draining Foundation's temporary ownership before the
 // caller receives them. Only res_commit's locals can keep these arrays alive.
-static __weak NSArray *committed_snapshot, *pending_snapshot;
+// ARC's ownership qualifier applies to one declarator, not the whole list:
+// declaring these together would leave pending_snapshot strong and retain the
+// allocations being tested, masking its negative control's intended failure.
+static __weak NSArray *committed_snapshot;
+static __weak NSArray *pending_snapshot;
 @interface SnapshotTable : NSObject {
     NSHashTable *objects;
 }
