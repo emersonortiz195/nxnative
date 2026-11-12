@@ -67,10 +67,20 @@ From the isolated fix checkout:
   dm/tools/tests/test_nsp_chain.py
 ```
 
-The initial combined run passed **86 tests**, with no failures/errors/skips;
-rerun after the final documentation edits before publishing. The archive suite's
+The combined run passed **86 tests**, with no failures/errors/skips, including a
+rerun after documentation edits. The archive suite's
 full-disk case is deliberately injected. Existing ResourceWarnings were filtered.
-Changed-file Ruff and whitespace checks pass. No native `t_pollwait`, Metal or
+Changed-file Ruff and whitespace checks pass. The full local Python lint ratchet
+(`PATH=/workspace/venv/bin:$PATH python dm/tools/lint_python.py --against origin/main`)
+still exits 1: `dmsh_entry.py:7` has an unused `dmsh_fetch` import (also present on
+main), and three baseline entries for missing backports imports are now resolved
+in this Python 3.12 environment but still listed. These are not findings in the
+new test. No shader tool or baseline was edited to hide them: `dmsh_entry.py`
+participates in the chain hash and cannot be changed under this task's explicit
+chain-preservation constraint. This local ratchet failure does not establish the
+result of the fresh Python 3.14 CI lint job.
+
+No native `t_pollwait`, Metal or
 gameplay pass is claimed on Linux.
 
 Native follow-up, on the CI Mac using the workflow's Xcode and profile:
@@ -97,3 +107,14 @@ Coordination: remote heads were checked before editing; no newly published agent
 changes overlapped these files. The fix branch derives from PR #1's head. Only
 ordinary fast-forward pushes may update its existing source branch; a changed
 remote head must be reviewed before retrying, never overwritten or force-pushed.
+
+The fixes were published as `a70a4864` on `codex/zelda-ci-fixes` and fast-forwarded
+onto `codex/zelda-independent-cross-review`, updating PR #1 without a merge or
+force-push. The PR checks page confirmed that head and fresh workflow runs. Host,
+tool and build jobs were queued/in progress at inspection, not validated passes.
+New run links: [tests](https://github.com/emersonortiz195/nxnative/actions/runs/43293263685),
+[Python lint](https://github.com/emersonortiz195/nxnative/actions/runs/43293263535),
+[C lint](https://github.com/emersonortiz195/nxnative/actions/runs/43293263741).
+The explicit `gh run rerun 43258379972 --failed` request was blocked by the API
+proxy; the PR synchronization event independently started the new workflows.
+Review those results before calling the reported Mac timeout fixed.
