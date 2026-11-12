@@ -54,6 +54,9 @@ Their base must be controlled in comparisons. No branches were merged here.
 ### Mapping bypass: reject for integration
 
 Commit `02353ca3` changes `gmem_map` in `dm/gfx/nvn/nvn_mtl.m`.
+The switch below exists only on that experimental branch, not in this review
+branch's current code. It must remain unset/disabled; this is historical analysis,
+not a configuration recipe.
 `DM_M2_NO_FULL_POOL=1` suppresses full buffers for large guest pools, while the
 generated table still describes only existing buffers/chunks in `g_pools`.
 Raw shader addresses are data-dependent and need not lie in a chunk previously

@@ -168,6 +168,10 @@ review yet; review them later rather than inventing conclusions.
 | Agent 3 shader changes | Pending publication; require chain/rebuild declaration and synthetic numerical checks | Owns chain tools/header; MSL/register changes require Mac compile and M2 measurement |
 | Agent 4 patches here | Preflight, fail-closed cache provenance and portable reader tests | Agent 3 may edit `dmsh_mtlcache.py`/cache tests; preserve successful identity bytes and coordinate before rebasing |
 
+The full-pool bypass discussed above is implemented only on the experimental
+branch, not this checkout. Keep it disabled; do not add it to the active switch
+catalog or reintroduce its reader to silence documentation validation.
+
 This patch does not touch residency, command submission, shader rewrites or the
 chain header. Its cache change stops a misconfigured compiler sooner; callers
 must surface that exception and the Mac must validate genuine tool output.
