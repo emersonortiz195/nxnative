@@ -2082,8 +2082,15 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     uint8_t b0 = (uint8_t)value;
     if (value == (uint32_t)b0 * 0x01010101u) { [blit_buf(0, 0, dst, dst + n) fillBuffer:(__bridge id<MTLBuffer>)db range:NSMakeRange(dof, n) value:b0]; return; }
     enum { PAT = 0x10000 }; static __strong id<MTLBuffer> pat; static uint32_t pat_v; static int pat_ok;
-    if (!pat_ok || pat_v != value) { uint32_t *tmp = malloc(PAT); for (unsigned i = 0; i < PAT / 4; i++) tmp[i] = value;
-        pat = [g_dev newBufferWithBytes:tmp length:PAT options:MTLResourceStorageModeShared]; free(tmp); pat_v = value; pat_ok = 1; res_add(pat); }
+    if (!pat_ok || pat_v != value) {
+        // The shared buffer is CPU-writable before encoding: initialize it in
+        // place instead of allocating and copying a second 64 KiB pattern.
+        // A changed value still gets its own buffer; earlier GPU copies may
+        // still read the previous one in this same submission.
+        pat = [g_dev newBufferWithLength:PAT options:MTLResourceStorageModeShared];
+        if (!pat) MDIE("buffer fill pattern allocation failed %#x", PAT);
+        uint32_t *words = pat.contents; for (unsigned i = 0; i < PAT / 4; i++) words[i] = value;
+        pat_v = value; pat_ok = 1; res_add(pat); }
     for (uint64_t off = 0; off < n; off += PAT) { uint64_t k = n - off < PAT ? n - off : PAT; enc_b_copy_buffer(blit_buf(0, 0, dst + off, dst + off + k), pat, 0, (__bridge id<MTLBuffer>)db, dof + off, k); }
 }
 
