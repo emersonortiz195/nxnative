@@ -1,7 +1,9 @@
 // Short timed waits as polls, through real thread SVCs on one guest thread.
 // Drive the run/gap clock explicitly: a CI deschedule longer than SPIN_GAP_NS
 // legitimately resets the run, so 20 ms of wall time need not include a backoff.
-// Host wait deadlines still use the real clock and pthread timed waits.
+// Host condition wait deadlines still use the real clock and pthread timed waits.
+// Guest sleeps are recorded, not executed: sleep_precise also sees this frozen
+// clock and would otherwise take all 16 attempts as real OS sleeps per call.
 #include "../dm.h"
 #include <assert.h>
 #include <stdatomic.h>
@@ -10,6 +12,14 @@
 
 static _Atomic uint64_t poll_clock;
 static uint64_t test_now_ns(void) { return atomic_load(&poll_clock); }
+static _Atomic uint64_t sleep_calls, sleep_requested;
+static int test_nanosleep(const struct timespec *ts, struct timespec *rem) {
+    (void)rem;
+    assert(ts->tv_sec == 0 && ts->tv_nsec > 0 && ts->tv_nsec <= 500000);
+    atomic_fetch_add(&sleep_calls, 1);
+    atomic_fetch_add(&sleep_requested, (uint64_t)ts->tv_nsec);
+    return 0;   // poll_clock advances only when the scenario supplies guest work
+}
 static _Thread_local struct timespec wait_start;
 static int test_clock_gettime(clockid_t clock, struct timespec *ts) {
     int r = clock_gettime(clock, ts);
@@ -31,10 +41,12 @@ static int test_timedwait(pthread_cond_t *cv, pthread_mutex_t *mutex, const stru
 #define now_ns test_now_ns
 #define clock_gettime test_clock_gettime
 #define pthread_cond_timedwait test_timedwait
+#define nanosleep test_nanosleep
 #include "../hle_thread.c"
 #undef now_ns
 #undef clock_gettime
 #undef pthread_cond_timedwait
+#undef nanosleep
 
 static _Atomic uint32_t mutex_word, condition_key;
 static uint32_t me_handle;
@@ -69,7 +81,7 @@ static void poll_run(int64_t wait_ns, int sleep_too, uint32_t event) {
 // A run of SleepThread(ns) with 10 us of guest work between the sleeps, as Unity 6's idle job workers poll their queue: the guest's own sleeps for steps * 10 us, then one more
 static void sleep_run(int64_t ns, int steps, int expect_backoff) {
     atomic_fetch_add(&poll_clock, 30000);   // guest work ends the previous run
-    uint64_t b0 = backoffs();
+    uint64_t b0 = backoffs(), calls0 = atomic_load(&sleep_calls), requested0 = atomic_load(&sleep_requested);
     for (int i = 0; i < steps; i++) {
         uint64_t r[32] = {(uint64_t)ns}; svc_thread(0x0B, r);
         assert(backoffs() == b0);
@@ -77,6 +89,7 @@ static void sleep_run(int64_t ns, int steps, int expect_backoff) {
     }
     uint64_t r[32] = {(uint64_t)ns}; svc_thread(0x0B, r);   // a short sleep becomes the back-off's
     assert(backoffs() == b0 + (expect_backoff ? 1 : 0));
+    assert(atomic_load(&sleep_calls) > calls0 && atomic_load(&sleep_requested) > requested0);
 }
 static void *signaller(void *unused) {
     (void)unused;
@@ -88,6 +101,7 @@ static void *signaller(void *unused) {
     return NULL;
 }
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);   // retain the last completed scenario if the watchdog fires in CI
     alarm(20);
     me_handle = svc_thread_main_init();
     poll_run(500, 0, 0);
