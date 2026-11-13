@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # A game's shader libraries as one file (dm/tools/shader_lib.py): the folder and image states, and a read by the host's C reader (dm/gfx/nvn/msl_image.h, dm/host/romfs_image.h).
-import os, subprocess, sys, tempfile, unittest
+import os, shlex, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -166,7 +166,9 @@ class AppSubset(Base):
 class HostReader(Base):
     def reader(self):
         exe = self.root / 'msl_read'; src = self.root / 'msl_read.c'; src.write_text(READER)
-        subprocess.run(['clang', '-Wall', '-Werror', '-Wno-unused-function', '-I', str(REPO / 'dm/gfx/nvn'), '-o', exe, src], check=True)
+        # This reader is plain C/POSIX, without Metal or Apple frameworks.
+        compiler = shlex.split(os.environ['CC']) if os.environ.get('CC') else [shutil.which('clang') or 'cc']
+        subprocess.run(compiler + ['-Wall', '-Werror', '-Wno-unused-function', '-I', str(REPO / 'dm/gfx/nvn'), '-o', exe, src], check=True)
         return exe
 
     def test_the_host_finds_every_file_in_place(self):

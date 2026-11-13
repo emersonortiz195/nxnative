@@ -6,7 +6,7 @@ position, scale or uniform; the readable-tile version main0_f compiles for the M
 only the body rewritten and main0 without function constants. With --fixture <dir>, writes t_feedback.m's tile-read shaders: fb_vs.metal, fb_fs.metal, the readable-tile library
 fedcba9876543210_bf.metallib (main0_f, cut from the shader's compile as the build cuts it) and facts.json (the vertex shader's screen varyings and the fragment shader's calls), the
 pixel-position shader fb_pos.metal with fedcba9876543211_bf.metallib and pos.json, and the output-mapping-only fedcba9876543212_bf.metallib with om.json"""
-import json, pathlib, subprocess, sys, tempfile, unittest
+import json, pathlib, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'tools'))
 import dmsh_abi, dmsh_fetch, dmsh_side, pso_offline
 
@@ -205,6 +205,7 @@ class ProjectiveSample(unittest.TestCase):
                          ('not divided by w', FS.replace('float _67 = 1.0 / _57;', 'float _67 = 2.0 / _57;'))):
             with self.subTest(why=why): self.assertEqual(self.calls(src), 'no rewritable sample')
 
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
     def test_compiles_on_both_platforms(self):
         v, _ = dmsh_fetch.fold(FS, BINDINGS)
         with tempfile.TemporaryDirectory() as d:
@@ -235,6 +236,7 @@ class PixelPositionSample(unittest.TestCase):
                          ('a name assigned twice', FS_POS.replace('    float2 _286', '    _55 = 0.5;\n    float2 _286'))):
             with self.subTest(why=why): self.assertEqual(self.calls(src), 'no rewritable sample')
 
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
     def test_compiles_on_both_platforms(self):
         v, _ = dmsh_fetch.fold(FS_POS, BINDINGS)
         with tempfile.TemporaryDirectory() as d:
@@ -312,6 +314,7 @@ class OutputMappingOnly(unittest.TestCase):
         self.assertIn('if (OM_0_1) out.m_46_at1 = r.m_46;', v)
         self.assertNotIn('constant int FX_0', v)
 
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
     def test_compiles_on_both_platforms(self):
         v, _ = dmsh_fetch.fold(FS_OM, [], om_only_ok=True)
         with tempfile.TemporaryDirectory() as d:
@@ -350,32 +353,49 @@ class OtherEntryPoints(unittest.TestCase):
         self.assertEqual(v.count('fx0 == 0 ? fb0 : '), 1)
         self.assertEqual(v.count('dm_body_main0(in, spvDescriptorSet0, -1, float4(0.0)'), 2)   # main0 and main0_d turn the tile read off
 
-    def test_a_copy_of_the_body_is_left_alone(self):   # main0_d as a copy of main0 (fs_dual before it called the body): its sample has no fb0 to read
+    def copied_body(self):   # main0_d as a copy of main0: its sample has no fb0 to read
         copy = FS2 + '\nstruct main0_out_d\n{\n    float4 m_46 [[color(0)]];\n    float4 m_47 [[color(0), index(1)]];\n};\n\n' + \
             FS2[FS2.index('fragment main0_out main0('):].replace('fragment main0_out main0(', 'fragment main0_out_d main0_d(').replace('return out;', 'return main0_out_d{out.m_46, out.m_47};')
         v, meta = dmsh_fetch.fold(copy, BINDINGS)
         self.assertEqual((len(meta['calls']), v.count('fx0 == 0 ? fb0 : ')), (1, 1))
+        return v
+
+    def test_a_copy_of_the_body_is_left_alone(self):
+        self.copied_body()
+
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
+    def test_copied_body_compiles(self):
+        v = self.copied_body()
         with tempfile.TemporaryDirectory() as d:
             try: tile_library(v, pathlib.Path(d), 'copy')
             except subprocess.CalledProcessError as e: self.fail(e.stderr)
 
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
     def test_builds_beside_a_dual_source_entry_point(self):
         v, _ = dmsh_fetch.fold(self.dual(), BINDINGS)
         with tempfile.TemporaryDirectory() as d:
             try: tile_library(v, pathlib.Path(d), 'dual')
             except subprocess.CalledProcessError as e: self.fail(e.stderr)
 
-    def test_builds_in_a_compile_unit(self):   # the base, the alpha test and logic operation entry points and main0_f from one compile
+    def compile_units(self):   # the base, alpha test, logic operation and main0_f from one compile
         for name, src in (('unit', FS), ('unit_dual', self.dual())):
             with self.subTest(name):
                 u, info = dmsh_side.unit(src)
                 self.assertIsNotNone(u, info)
                 v, meta = dmsh_fetch.fold(u, BINDINGS)
                 self.assertIsNotNone(v, meta)
-                with tempfile.TemporaryDirectory() as d:
-                    for sdk in ('macosx', 'iphoneos'):
-                        try: tile_library(v, pathlib.Path(d), name + sdk, set(info['alpha'] + info['logic']), sdk)
-                        except subprocess.CalledProcessError as e: self.fail(e.stderr)
+                yield name, v, set(info['alpha'] + info['logic'])
+
+    def test_rewrites_compile_units(self):
+        self.assertEqual(len(list(self.compile_units())), 2)
+
+    @unittest.skipUnless(shutil.which('xcrun'), 'requires Xcode Metal compilers')
+    def test_builds_in_a_compile_unit(self):
+        for name, v, side in self.compile_units():
+            with tempfile.TemporaryDirectory() as d:
+                for sdk in ('macosx', 'iphoneos'):
+                    try: tile_library(v, pathlib.Path(d), name + sdk, side, sdk)
+                    except subprocess.CalledProcessError as e: self.fail(e.stderr)
 
 
 def fixture(out):
