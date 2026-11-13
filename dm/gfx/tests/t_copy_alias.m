@@ -21,6 +21,27 @@ static void finish(void) {
 static void bytes(const void *got, const void *want, size_t n, const char *label) {
     CHECK(!memcmp(got, want, n), label);
 }
+// Pattern replacement must not overwrite earlier GPU-visible source bytes.
+// Cross the 64 KiB pattern boundary and keep guards on both sides of each fill.
+static void fill_patterns(void) {
+    const uint32_t values[] = {0x78563412u, 0x01234567u, 0x01234567u, 0xdeadbeefu, 0x6d6d6d6du};
+    const size_t n = 0x10000 + 20, stride = n + 32, count = sizeof values / sizeof *values;
+    size_t len = (stride * count + getpagesize() - 1) & ~(size_t)(getpagesize() - 1);
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(mem != MAP_FAILED, "pattern fill backing allocated"); if (mem == MAP_FAILED) abort();
+    memset(mem, 0xcc, len); mtl_pool_add(mem, len);
+    mtl_sub_begin();
+    for (size_t i = 0; i < count; i++) mtl_sub_fill((uint64_t)(mem + i * stride + 16), n, values[i]);
+    finish();
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t *words = (const uint32_t *)(mem + i * stride + 16); int ok = 1;
+        for (size_t k = 0; k < n / 4; k++) ok &= words[k] == values[i];
+        CHECK(ok, "pattern fill retains each value across chunks and replacements");
+        ok = 1; for (size_t k = 0; k < 16; k++) ok &= mem[i * stride + k] == 0xcc && mem[i * stride + 16 + n + k] == 0xcc;
+        CHECK(ok, "pattern fill leaves guards untouched");
+    }
+    mtl_pool_del(mem); defer_drain(); munmap(mem, len);
+}
 static void separate_buffers(void) {
     size_t pg = getpagesize();
     void *mem = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -116,6 +137,6 @@ static void shader_alias(void) {
     atomic_fetch_sub(&g_big_n, 1); res_remove(a); res_remove(b); res_remove(io); res_remove(seed); a = b = nil; munmap(mem, pg);
 }
 int main(void) { @autoreleasepool {
-    mtl_init(); separate_buffers(); sparse_copies(); shader_alias();
+    mtl_init(); fill_patterns(); separate_buffers(); sparse_copies(); shader_alias();
     printf("t_copy_alias: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }

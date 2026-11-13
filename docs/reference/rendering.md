@@ -1,5 +1,31 @@
 # Rendering
 
+### Temporary CPU storage for nonuniform buffer fills
+
+- **Symptom:** a changed nonuniform buffer-fill pattern allocates a temporary 64 KiB CPU array and copies it into Metal.
+  Code review found this in `mtl_sub_fill`. No
+  game-specific stall or allocation failure was reproduced.
+- **Cause:** a CPU array was filled and passed to `newBufferWithBytes`, although
+  the destination shared Metal buffer is CPU-writable before any command is
+  encoded against it.
+- **Fix (hardware validation open):** allocate the same 64 KiB shared Metal
+  buffer with `newBufferWithLength`, reject allocation failure, and initialize
+  its contents directly. A changed pattern still allocates a distinct buffer:
+  earlier GPU copies may read the preceding pattern in the same submission.
+  Cache reuse, residency registration, copy chunking and synchronization are
+  unchanged. This removes one explicit 64 KiB `malloc`/`free` pair and the
+  `newBufferWithBytes` source copy per pattern change; it does not reduce the
+  retained Metal pattern size or establish a measurable frame-time improvement.
+- **Check:** portable `test_fill_pattern.py` executes the actual production
+  initializer with Metal allocation syntax substituted, verifies no temporary
+  CPU allocation, repeated-pattern cache reuse and immutable earlier pattern
+  contents. `t_copy_alias` adds real GPU fills across the 64 KiB chunk boundary,
+  successive and repeated values, the byte-fill fast path and destination guards.
+  GPU validation on Apple Silicon, allocation-failure behavior on a real Metal
+  device, M2 frame-time/footprint measurements and game regressions remain open.
+- **Found on:** code review during [Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game)
+  M2 investigation; its frequency and cost in actual gameplay are unmeasured.
+
 The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
 ## Textures and formats

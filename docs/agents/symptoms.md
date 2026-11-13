@@ -650,6 +650,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Rendering
 
+- a changed nonuniform buffer-fill pattern allocates a temporary 64 KiB CPU array and copies it into Metal. → [Temporary CPU storage for nonuniform buffer fills](../reference/rendering.md#temporary-cpu-storage-for-nonuniform-buffer-fills)
 - clang reports null dereferences in `nvnWindowInitialize` and `clear_tex`; clearing a null texture crashes with `DM_NVN_PASSDUMP=1`. → [Null textures in diagnostic logs](../reference/rendering.md#null-textures-in-diagnostic-logs)
 - Metal aborts on a texture descriptor with an absurd size (`height (1869367126) greater than … 16384`). → [Texture objects copied into command records](../reference/rendering.md#texture-objects-copied-into-command-records)
 - a decoded movie stays black even though its YUV textures contain the picture; disabling its depth test makes it visible. → [New textures start as zero](../reference/rendering.md#new-textures-start-as-zero)
