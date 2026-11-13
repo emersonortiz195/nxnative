@@ -482,6 +482,18 @@ check_t_image_alias: t_image_alias
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_image_alias
 t_rt_recycle: t_rt_recycle.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_recycle.m $(MTL_T_SRC) $(FW)
+t_heap_cache: t_heap_cache.c ../nvn/nvn_heap_cache.h
+	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -o $@ $<
+t_res_snapshot: t_res_snapshot.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_res_snapshot.m $(MTL_T_SRC) $(FW)
+t_rt_recycle_budget: t_rt_recycle_budget.m gpu_test_timeout.h $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_recycle_budget.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_rt_recycle_budget
+check_t_rt_recycle_budget: t_rt_recycle_budget
+	DM_NVN_RT_RECYCLE=1 DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle_budget
+	DM_NVN_RT_RECYCLE=1 DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_rt_recycle_budget
+	DM_NVN_RT_RECYCLE=1 DM_NVN_ENC_THREAD=0 python3 check_gpu_timeout.py ./t_rt_recycle_budget
+	DM_NVN_RT_RECYCLE=1 DM_NVN_ENC_THREAD=1 python3 check_gpu_timeout.py ./t_rt_recycle_budget
 .PHONY: check_t_rt_recycle
 check_t_rt_recycle: t_rt_recycle
 	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_rt_recycle
