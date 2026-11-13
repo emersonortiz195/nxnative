@@ -25,7 +25,12 @@ def clone(src, dst):
 
 
 def compiler_id(sdk):
-    def run(*a): return subprocess.run(['xcrun', '-sdk', sdk, *a], capture_output=True, text=True).stdout
+    def run(*a):
+        cmd = ['xcrun', '-sdk', sdk, *a]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if not result.stdout.strip():
+            raise ValueError(f'cannot identify Metal compiler: {cmd!r} returned empty output')
+        return result.stdout
     tools = ''.join(run(t, '--version') for t in ('metal', 'metallib'))
     return re.sub(r'(?m)^InstalledDir:.*\n?', '', tools) + run('--show-sdk-version') + run('--show-sdk-build-version')   # the install path changes with each toolchain mount
 

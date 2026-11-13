@@ -361,6 +361,39 @@ class StageCache(unittest.TestCase):
         self.assertNotEqual(before, self.key(env, sdk='different SDK build'))
 
 
+class CompilerIdentity(unittest.TestCase):
+    def test_failed_probe_cannot_create_a_cache_identity(self):
+        for failed in range(4):
+            with self.subTest(probe=failed):
+                calls = []
+                def run(cmd, calls=calls, failed=failed, **kwargs):
+                    calls.append(cmd)
+                    self.assertTrue(kwargs.get('check'))
+                    if len(calls) == failed + 1:
+                        raise subprocess.CalledProcessError(1, cmd, stderr='Xcode unavailable')
+                    return subprocess.CompletedProcess(cmd, 0, stdout='version\n')
+                with mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=run):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        dmsh_mtlcache.compiler_id('macosx')
+
+    def test_empty_probe_cannot_create_a_cache_identity(self):
+        for empty in range(4):
+            results = [subprocess.CompletedProcess([], 0, stdout='version\n') for _ in range(4)]
+            results[empty] = subprocess.CompletedProcess([], 0, stdout=' \n')
+            with self.subTest(probe=empty), mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=results):
+                with self.assertRaises(ValueError):
+                    dmsh_mtlcache.compiler_id('macosx')
+
+    def test_success_keeps_existing_identity_and_ignores_install_path(self):
+        outputs = ['Apple metal version A\nInstalledDir: /first\n', 'metallib B\n', '27.2\n', 'build C\n']
+        def identify(path):
+            results = [subprocess.CompletedProcess([], 0, stdout=s.replace('/first', path)) for s in outputs]
+            with mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=results):
+                return dmsh_mtlcache.compiler_id('macosx')
+        self.assertEqual(identify('/first'), 'Apple metal version A\nmetallib B\n27.2\nbuild C\n')
+        self.assertEqual(identify('/first'), identify('/second'))
+
+
 class MetalPrefill(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
