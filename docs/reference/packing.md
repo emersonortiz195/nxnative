@@ -439,6 +439,15 @@
 - **Fix:** `nx_extract --html` (`dm/tools/nx_extract/Program.cs`) reads the NCA's header: a data section with a relocation table (`IsPatchSection`) is a patch, read over the base game's Manual NCAs, and any other is read alone, once, so damage in it is reported as damage. The header does not say which base NCA a patch is over (HtmlDocument and LegalInformation are both Manual), so `Try` reads over each in turn and undoes a read that adds files that fail the hash check (it deletes the folder and takes the entries off the list). A patch that reads over none is reported with `[RED] an HtmlDocument NCA of the update patches none of the base game's`, and the log names each patched read (`html<n>: a patch of the base game's NCA`).
 - **Found on:** [Super Smash Bros. Ultimate](../../dm/games/01006A800016E000/README.md#found-on-this-game) update 13.0.5 (`v2031616`) ([PR #1215](https://github.com/seedds/nxnative/pull/1215)): 1,641 of the NCA's files failed alone; read through the base, 2,798 files (122.2 MB) and none damaged, and the game packed and played a battle on the Mac at 60 fps. Balatro's update has a full Manual NCA: it is read alone, as before. `IsPatchSection` checked on Balatro's update: true on the Program NCA's RomFS, false on its ExeFS, its Manual NCA and every base section.
 
+## Regression harness
+
+### Read-only regression impact fails before reading revisions on Linux
+
+- **Symptom:** `scripts/regress.py impact` or importing the regression report readers fails with `OSError: /usr/lib/libproc.dylib: cannot open shared object file` on Linux, before reading any revision or game manifest.
+- **Cause:** the harness loaded macOS's live physical-footprint sampler at module import, although impact analysis and report comparisons do not sample a running game.
+- **Fix:** `regress.py` loads `libproc` only when `footprint` is called for a live run. Unsupported live sampling remains an explicit `HarnessError`; it never substitutes zero memory or claims a Linux gameplay pass. Mac sampling keeps RUSAGE_INFO_V4 and the same current/peak fields, and loads the library once.
+- **Found on:** the Linux-only [Phase 4 Zelda QA review](../agents/zelda-phase4-qa.md), with synthetic sampler checks and the existing report/impact tests; actual macOS sampling still requires Mac validation.
+
 ## Sparse base games
 
 ### The survey's build ID lookup stops on the base game alone with a hash error
