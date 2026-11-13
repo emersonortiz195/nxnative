@@ -233,8 +233,10 @@ class ShaderCache(unittest.TestCase):
         # the batches, then the loop that translates and finishes them (the translator and fin substituted)
         start = next(i for i, n in enumerate(self.tree.body) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'batches' for t in n.targets))
         end = next(i for i, n in enumerate(self.tree.body) if i > start and isinstance(n, ast.With)) + 1
-        work = Path(self.tmp.name) / 'work'
-        def translate(batch): work.mkdir(exist_ok=True); return str(work)
+        # Translation overlaps finishing, which removes each completed work
+        # directory. Match the real translator's distinct directory per batch:
+        # sharing one races mkdir against the preceding batch's rmtree.
+        def translate(batch): return tempfile.mkdtemp(prefix='batch-', dir=self.tmp.name)
         self.ns.update(cf=cf, NJ=1, BATCH=1, keys=keys, fin=lambda key, wb: finish_key(key), translate=translate)
         exec(compile(ast.Module(body=self.tree.body[start:end], type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
         self.assertEqual(built, [pixel, vertex])

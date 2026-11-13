@@ -1,5 +1,112 @@
 # Independent integration review: Zelda on M2, 8 GB
 
+## Continued review and publication, November 12, 2026
+
+This section supersedes the earlier access, CI and publication status below.
+The assigned compatibility work is on `codex/zelda-independent-cross-review`,
+draft [PR #1](https://github.com/emersonortiz195/nxnative/pull/1). The source
+remains chain `3ae08e02ec6a`; no runtime, profile, shader-chain or archive was
+modified in this continuation. `DM_M2_NO_FULL_POOL` was not enabled.
+
+### Completed fixture fix
+
+The focused suite reproduced `FileExistsError` in the cache-padding test's
+fake translator. It returned the same scratch directory for both batches.
+Translation overlaps finishing even with `NJ=1`, and the real builder removes
+each finished batch directory; the next fake translation's `mkdir` therefore
+raced the preceding cleanup. The fixture now creates a distinct temporary
+directory per batch, matching the real translator. Production translation,
+dependency ordering, cache publication and cache restoration remain exercised.
+No runtime optimization or shader rebuild is implied by this test correction.
+
+### Fresh validation
+
+Python commands use `/workspace/venv/bin/python`; game-specific commands set
+`DM_GAME=0400486024DEC000`. Logs are local scratch under `work/`.
+
+| Check | Result |
+|---|---|
+| Focused `unittest` files: shader_compat, shader_toolchain_cache, shader_lib, nsp_chain, docs, env_switches, pollwait_fixture | Before fix: 86 run, one cache-fixture error. After fix: **86 passed** |
+| Shader gather_offsets, hmma, border, reflect, fetch, ampere_mem plus tbdr_budget, with `DM_ROOT` in workspace scratch | **147 run: 63 passed, 84 skipped**, no errors/failures |
+| CPU textures: `make -C dm/gfx/tex/tests CLANG=cc t_tex`, then `t_tex` | **5,382/5,382 checks passed** |
+| Published memory branch `df2c6e9f` guard C model, copied with its unchanged header into scratch; `cc -std=c11 -O2 -Wall -Wextra -Werror` | Compile and execution passed |
+| Cache-padding test independently after the fix | One passed |
+| Changed-file Ruff; `git diff --check` | Passed |
+| Full tools discovery | 1,394 run; failed with 14 failure records, 37 errors, 70 skips |
+| Full gfx Python discovery | 477 run; 14 errors, 179 skips |
+| Full iOS Python discovery | 52 run; 21 failure records, 10 skips |
+| Host Python discovery | Two errors: missing native `t_svc_memory` executable |
+| Native host/gfx `make ... run` | Blocked by missing clang/Xcode/Metal; no native pass claimed |
+| `scripts/regress.py check --games 0400486024DEC000` | Cannot import macOS `/usr/lib/libproc.dylib` on Linux |
+| Python lint ratchet against origin/main | Failed: unchanged `dmsh_entry.py:7` unused `dmsh_fetch` import; three locally resolved imports remain in baseline |
+
+The broad discovery commands were `python -m unittest discover -s` with
+`dm/tools/tests`, `dm/gfx/tests`, `dm/ios/tests`, and `dm/host/tests` respectively.
+They are **not passing suites**. Their failure records include subtests, so
+subtracting records from discovered counts does not give reliable pass totals.
+Observed blockers include missing macOS libraries, Xcode `xcrun`, native build
+products, macOS-specific copy flags/APFS clone expectations, and strict GCC
+warnings in unrelated test C snippets. The initial full gfx run also used a
+default scratch directory under the read-only home; its five budget-test errors
+were resolved by setting `DM_ROOT` under workspace scratch in the focused run.
+The cache-fixture race above is fixed; broad discovery was recorded before it.
+These failures must not be suppressed or described as successful Linux coverage.
+
+### Observed GitHub CI
+
+At `a70a4864a5bf41ebb74f561a101fa6f3be71640c`, the
+[tests workflow](https://github.com/emersonortiz195/nxnative/actions/runs/43293263685)
+completed successfully. All six jobs passed: host/CPU gfx, sanitizers, tool
+tests, coverage, Mac/gfx/iOS source build checks, and unsigned synthetic iOS app.
+This establishes CI coverage on that revision, not gameplay or this new commit.
+The local fixture correction and report still need their own PR CI run.
+
+[Python lint](https://github.com/emersonortiz195/nxnative/actions/runs/43293263535)
+failed on the unchanged shader-chain import above. Removing it would change the
+chain and invalidate existing libraries for a lint-only cleanup, so it remains
+an explicit blocker for a separate chain-coordinated fix. No baseline was edited.
+[C lint](https://github.com/emersonortiz195/nxnative/actions/runs/43293263741)
+never reached compilation: checkout failed three times with `Could not resolve
+host: github.com`. This is infrastructure failure, not a clang-tidy result.
+
+### Published branch compatibility and coordination
+
+Remote heads were fetched explicitly and inspected without editing other branches.
+
+| Branch/head | Review and integration recommendation |
+|---|---|
+| `codex/zelda-compatibility-review` / `27fbc92f` | Ancestor already included in #1; do not apply again |
+| `codex/zelda-ci-fixes` / `5a5b94d1` | Contains #1's `a70a4864` plus its own progress report; no additional code to integrate |
+| `codex/zelda-phase2-integration` / `28debc68` | Exposed as draft [PR #2](https://github.com/emersonortiz195/nxnative/pull/2), with review comment; optional map/table checks extend the same preflight and tests. Integrate its incremental commit after #1, preserving #1's newer pollwait/catalog fixes. Local three-way merge-tree inspection showed no conflict markers; GitHub mergeability and CI must still be checked |
+| `zelda-m2-memory-experiments` / `df2c6e9f` | Exposed as draft [PR #3](https://github.com/emersonortiz195/nxnative/pull/3), with review comment. Older renderer diff reverses main's `MLOG` host-stack logging protection. Preserve main's `dm_log`; extract diagnostics separately from unsafe mapping bypass after ARC/Metal validation |
+| `zelda-m2-8gb-optimization` and backup / `02353ca3` | Same mapping experiment, inherited by #3; complete raw-address coverage unproven, blocked |
+
+Opening #2/#3 made existing published proposals reviewable; it did not modify
+their commits or imply author validation. No merge, rebase, force-push or rewrite
+of another contributor's branch occurred. GitHub connector access worked even
+though local `gh auth status` reported an invalid token.
+
+Recommended order remains #1 compatibility/test work, then #2 optional read-only
+map/table checks, then diagnostics-only work from #3 after Foundation/ARC O0/O2,
+real Metal residency/add/remove/submission/retirement and scene-transition tests.
+Full-pool bypass stays blocked. Diagnostics add overhead and do not reduce peak
+memory by themselves. No separately published shader-stall or renderer throughput
+optimization was found beyond these proposals.
+
+### Benchmark and readiness limits
+
+No M2, game files, installed archive or Metal GPU is available here. FPS,
+frame-time p50/p95/p99, peak footprint, swap, shader stalls and thermal results
+are **not measured**. The 720p/~30 FPS target is unverified. On the target M2,
+first establish a correct matching-chain baseline, verify internal/presented
+resolution, then compare each proposal separately with alternating runs and
+sustained scene transitions. Keep the original archive untouched.
+
+This branch is ready for independent code/integration review as a draft.
+It is not merge-ready or evidence of reliable 720p/30 gameplay. Mac GPU tests,
+real archive compatibility, required impacted-game regressions for any future
+runtime change, M2 benchmarks and lint resolution remain outstanding.
+
 Agent 4 review, November 12, 2026. Goal: correct Ocarina of Time gameplay at
 approximately 1280x720 and 30 FPS on an Apple M2 MacBook Air with 8 GB unified
 RAM. All checks below ran on Linux. No Metal, Xcode, Apple GPU, installed game,
