@@ -811,5 +811,43 @@ class Validated(unittest.TestCase):
                 self.assertTrue(row.get('chain') and row.get('commit') and row.get('date'), f)
 
 
+class FootprintSampler(unittest.TestCase):
+    def test_readers_do_not_load_a_platform_library_on_import(self):
+        with patch.object(regress.ctypes, 'CDLL', side_effect=AssertionError('eager platform load')):
+            module = regress.load_module('regress_portable', REPO / 'scripts/regress.py')
+        self.assertIsNone(module._libproc)
+
+    def test_live_sampling_requires_macos_without_loading_a_library(self):
+        with patch.object(regress, '_libproc', None), patch.object(regress.sys, 'platform', 'linux'), \
+                patch.object(regress.ctypes, 'CDLL') as load:
+            with self.assertRaisesRegex(regress.HarnessError, 'requires macOS'):
+                regress.footprint(123)
+            load.assert_not_called()
+
+    def test_macos_sampler_loads_once_and_preserves_current_and_peak(self):
+        calls = []
+        def sample(pid, flavor, buf):
+            calls.append((pid, flavor))
+            values = [0] * 35
+            values[7], values[28] = 123456, 987654
+            regress.struct.pack_into('<16x35Q', buf, 0, *values)
+            return 0
+        library = NS(proc_pid_rusage=sample)
+        with patch.object(regress, '_libproc', None), patch.object(regress.sys, 'platform', 'darwin'), \
+                patch.object(regress.ctypes, 'CDLL', return_value=library) as load:
+            self.assertEqual(regress.footprint(123), (123456, 987654))
+            self.assertEqual(regress.footprint(456), (123456, 987654))
+            load.assert_called_once_with('/usr/lib/libproc.dylib')
+        self.assertEqual(calls, [(123, 4), (456, 4)])
+
+    def test_unavailable_library_is_a_harness_error_and_failed_sample_is_unknown(self):
+        with patch.object(regress, '_libproc', None), patch.object(regress.sys, 'platform', 'darwin'), \
+                patch.object(regress.ctypes, 'CDLL', side_effect=OSError('fixture unavailable')):
+            with self.assertRaisesRegex(regress.HarnessError, 'fixture unavailable'):
+                regress.footprint(123)
+        with patch.object(regress, '_libproc', NS(proc_pid_rusage=lambda *args: -1)):
+            self.assertIsNone(regress.footprint(123))
+
+
 if __name__ == '__main__':
     unittest.main()

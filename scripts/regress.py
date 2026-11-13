@@ -815,10 +815,16 @@ def run_heavy(cmd, log, cwd, env, a, what):
 
 # ---------------------------------------------------------------- one game run
 
-_libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+_libproc = None   # load only for a live Mac run; impact and report readers are portable
 
 
 def footprint(pid):   # (current, lifetime peak) physical footprint in bytes (proc_pid_rusage, RUSAGE_INFO_V4)
+    global _libproc
+    if _libproc is None:
+        if sys.platform != 'darwin':
+            raise HarnessError('physical footprint sampling requires macOS (proc_pid_rusage)')
+        try: _libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+        except OSError as e: raise HarnessError(f'cannot load macOS physical footprint sampler: {e}') from e
     buf = ctypes.create_string_buffer(512)
     if _libproc.proc_pid_rusage(pid, 4, buf) != 0: return None
     v = struct.unpack_from('<16x35Q', buf.raw)
