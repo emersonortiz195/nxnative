@@ -8,7 +8,7 @@
 # Filling from earlier builds: every imported library must record the current compiler identity and flags in its reflection. Legacy libraries without that identity are not imported.
 # A fresh compile of two shaders per stage also checks their bytes. Each folder is read once per compiler identity (filled.json remembers its number of libraries).
 # Not part of the chain version (dmsh_chain.py): the cache never changes an output, it only skips recompiling one. Change FORMAT when what it stores changes.
-import os, re, sys, json, shutil, ctypes, hashlib, threading, subprocess, collections
+import os, re, sys, json, shutil, ctypes, hashlib, threading, subprocess, collections, contextlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
 import romfs, shader_lib   # the libraries of an earlier build may be one file (shader_lib.py), read in place
 STAMPS = 'metallib/filled.json'   # the earlier builds' folders already read
@@ -41,6 +41,7 @@ class Cache:
         self.store, self.targets, self.work = store, targets, work
         self.ident = {t: hashlib.sha256(FORMAT + b'\0' + rec.encode() + b'\0' + compiler_id(sdk).encode()).digest() for t, (sdk, rec, _) in targets.items()}
         self.stats, self.lock = collections.Counter(), threading.Lock()
+        self.pending = {}   # only active requests; completed shader keys consume no lock memory
 
     def path(self, target, src):
         d = hashlib.sha256(self.ident[target] + b'\0' + src).hexdigest()
@@ -52,6 +53,23 @@ class Cache:
     def count(self, what, n=1):
         with self.lock: self.stats[what] += n
 
+    @contextlib.contextmanager
+    def _entry(self, path):
+        # Same-source misses otherwise launch one Metal compiler per build
+        # worker. Hold no store/global lock while compiling: other sources and
+        # targets stay parallel. Waiters recheck the cache after publication.
+        with self.lock:
+            entry = self.pending.get(path)
+            guard, users = entry if entry is not None else (threading.Lock(), 0)
+            self.pending[path] = (guard, users + 1)
+        try:
+            with guard: yield
+        finally:
+            with self.lock:
+                guard, users = self.pending[path]
+                if users == 1: del self.pending[path]
+                else: self.pending[path] = (guard, users - 1)
+
     def _compile(self, target, msl, lib):
         air = os.path.join(self.work, f'mtlcache-{target}-{os.getpid()}-{threading.get_ident()}.air')
         try: self.targets[target][2](msl, air, lib)
@@ -62,10 +80,12 @@ class Cache:
         """msl → lib for target: a clone of the library that the same source compiled to before, or a compile (then kept). Raises CalledProcessError as the compile does"""
         p = self.path(target, open(msl, 'rb').read())
         if self.store.to_file(p, lib): self.count((target, 'reused')); return
-        tmp = f'{lib}.tmp-{os.getpid()}-{threading.get_ident()}'
-        self._compile(target, msl, tmp)
-        os.replace(tmp, lib)
-        self.store.put_file(p, lib); self.count((target, 'compiled'))
+        with self._entry(p):
+            if self.store.to_file(p, lib): self.count((target, 'reused')); return
+            tmp = f'{lib}.tmp-{os.getpid()}-{threading.get_ident()}'
+            self._compile(target, msl, tmp)
+            os.replace(tmp, lib)
+            self.store.put_file(p, lib); self.count((target, 'compiled'))
 
     def compile_split(self, target, msl, libs, split):
         """msl → the libraries libs cut from its one compile, split(the library's bytes) → their bytes, in order: clones of what the same source gave before, or a compile (then the pieces
@@ -76,18 +96,22 @@ class Cache:
         if all(self.store.has(x) for x in paths):
             for src, dst in zip(paths, libs): self.store.to_file(src, dst)
             self.count((target, 'reused')); return
-        whole = f'{libs[0]}.tmp-{os.getpid()}-{threading.get_ident()}'
-        self._compile(target, msl, whole)
-        try:
-            with open(whole, 'rb') as f: pieces = split(f.read())
-        finally: os.unlink(whole)
-        if len(pieces) != len(libs): raise ValueError(f'the split gave {len(pieces)} libraries, not {len(libs)}')
-        for lib, data in zip(libs, pieces):
-            with open(whole, 'wb') as f: f.write(data)
-            os.replace(whole, lib)
-        with self.store.batch():
-            for path, lib in zip(paths, libs): self.store.put_file(path, lib)
-        self.count((target, 'compiled'))
+        with self._entry(p):
+            if all(self.store.has(x) for x in paths):
+                for src, dst in zip(paths, libs): self.store.to_file(src, dst)
+                self.count((target, 'reused')); return
+            whole = f'{libs[0]}.tmp-{os.getpid()}-{threading.get_ident()}'
+            self._compile(target, msl, whole)
+            try:
+                with open(whole, 'rb') as f: pieces = split(f.read())
+            finally: os.unlink(whole)
+            if len(pieces) != len(libs): raise ValueError(f'the split gave {len(pieces)} libraries, not {len(libs)}')
+            for lib, data in zip(libs, pieces):
+                with open(whole, 'wb') as f: f.write(data)
+                os.replace(whole, lib)
+            with self.store.batch():
+                for path, lib in zip(paths, libs): self.store.put_file(path, lib)
+            self.count((target, 'compiled'))
 
     def _check(self, target, d, stems, mac_dir):
         """None if folder d was built with the current convention and compiler, else why not"""
