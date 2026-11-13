@@ -319,12 +319,13 @@ static void res_remove(id<MTLAllocation> r) { @autoreleasepool {
 // texture is filled as a new allocation is (tex_init_fill or zeros; a family heap is zeroed through its largest description, a snapshot is copied into), so nothing it reads
 // depends on the reuse; the memory was the old texture's only up to that texture's last use, which completed, as with memory Metal frees and hands out again, so no alias flush is
 // added (resource_vis). Heaps idle for RH_IDLE_NS, and the oldest past
-// RH_CAP bytes waiting, leave the residency set when a submission begins (rh_trim). DM_NVN_RT_RECYCLE=0 makes each texture its own allocation and each family heap exact and freed
+// RH_CAP bytes waiting, leave the residency set when a submission begins (rh_trim). Returns that would exceed RH_CAP are removed immediately, after their last texture goes.
+// DM_NVN_RT_RECYCLE=0 makes each texture its own allocation and each family heap exact and freed
 // with its last texture, as before; ab alternates it with the DM_AB phases
 enum { RH_CAP = 256u << 20 }; static const uint64_t RH_IDLE_NS = 3000000000ull;
 typedef struct { void *heap; uint64_t size, t; } rh_ent;   // heap: retained (CFBridgingRetain); t: when it began to wait
 static os_unfair_lock g_rh_lk = OS_UNFAIR_LOCK_INIT; static rh_ent *g_rh; static unsigned g_rh_n, g_rh_cap; static uint64_t g_rh_bytes;
-static _Atomic uint64_t g_rh_made, g_rh_reused, g_rh_trimmed;   // for the memory readout
+static _Atomic uint64_t g_rh_made, g_rh_reused, g_rh_trimmed, g_rh_rejected, g_rh_rejected_bytes;   // cumulative; g_rh_bytes is the current idle capacity
 static int sw_mode(const char *name, int dflt); static inline int sw_on(int m);
 static int rh_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_NVN_RT_RECYCLE", 1); return m; }
 // A heap whose texture was freed waits for the next texture it fits (with the switch off it is freed). Runs where the texture's last reference goes (defer_drain: the submit thread or a
@@ -332,8 +333,19 @@ static int rh_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_NVN_RT_
 static void rh_wait(id<MTLHeap> heap) {
     if (!heap) return;
     if (!sw_on(rh_mode())) { res_remove(heap); return; }
-    rh_ent e = {(void *)CFBridgingRetain(heap), heap.size, clock_gettime_nsec_np(CLOCK_MONOTONIC)};
+    uint64_t size = heap.size;
     os_unfair_lock_lock(&g_rh_lk);
+    // Completion handlers can return many heaps before another submission begins.
+    // Bound idle capacity here, not just in rh_trim's 64-entry submission sweep.
+    // Only the last texture's owner calls us: live/in-flight heaps never enter
+    // this list. Keep res_remove outside g_rh_lk (as in rh_trim).
+    if (size > RH_CAP - MIN(g_rh_bytes, RH_CAP)) {
+        os_unfair_lock_unlock(&g_rh_lk);
+        res_remove(heap);
+        atomic_fetch_add(&g_rh_rejected, 1); atomic_fetch_add(&g_rh_rejected_bytes, size);
+        return;
+    }
+    rh_ent e = {(void *)CFBridgingRetain(heap), size, clock_gettime_nsec_np(CLOCK_MONOTONIC)};
     if (g_rh_n == g_rh_cap) { g_rh_cap = g_rh_cap ? 2 * g_rh_cap : 64; g_rh = realloc_or_die(g_rh, g_rh_cap * sizeof *g_rh, "the recycled texture heaps"); }
     g_rh[g_rh_n++] = e; g_rh_bytes += e.size;
     os_unfair_lock_unlock(&g_rh_lk);
@@ -4536,7 +4548,12 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     unsigned long long dr = rss_mb > last_rss ? rss_mb - last_rss : last_rss - rss_mb, dg = gpu > last_gpu ? gpu - last_gpu : last_gpu - gpu;
     if (lines >= 400 || (lines && dr < 64 && dg < 64 && frame - last_frame < 3000)) return; lines++; last_rss = rss_mb; last_gpu = gpu; last_frame = frame;
     pthread_mutex_lock(&g_deferred_mu); unsigned long nd = (unsigned long)g_deferred.count; pthread_mutex_unlock(&g_deferred_mu);
-    pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
+    unsigned long nr; uint64_t resident_capacity = 0;
+    @autoreleasepool {   // weak enumeration must not pin allocations on the guest frame thread
+        pthread_mutex_lock(&g_res_mu); nr = (unsigned long)g_res_objects.count;
+        for (id<MTLAllocation> a in g_res_objects) resident_capacity += a.allocatedSize;
+        pthread_mutex_unlock(&g_res_mu);
+    }
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     pthread_mutex_lock(&g_smu); unsigned ns = g_by_serial.n, ashared = g_alias.n, nghost = g_ghost.n, nwait = g_retire_held.n; uint64_t ghost_puts = g_ghost_puts;
     unsigned aorph = 0;   // shared textures no live texture object or finalized serial resolves to: kept only until their storage is taken over or their pool goes (alias_take_over)
@@ -4551,6 +4568,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     int pres = 0; @autoreleasepool { pthread_mutex_lock(&g_mu); pres = g_pool_res_n; for (id<MTLBuffer> b in g_dead_pools) { dead_n++; dead_mb += b.length; } pthread_mutex_unlock(&g_mu); } dead_mb >>= 20;   // host objects held by serial (textures / packaged textures / programs): if it climbs along with GPU allocated, textures are not being released
     // os_proc_available_memory: how far this process is from being terminated by the system for memory, iOS only; the Mac writes "none". On a phone, a crash with no log is most likely this number reaching 0
     os_unfair_lock_lock(&g_rh_lk); unsigned rh_n = g_rh_n; uint64_t rh_bytes = g_rh_bytes; os_unfair_lock_unlock(&g_rh_lk);
+    MLOG("Metal logical capacity now: residency %llu bytes, idle recycled heaps %llu bytes / %u limit; recycle rejected in total %llu heaps, %llu bytes (not physical footprint)",
+         (unsigned long long)resident_capacity, (unsigned long long)rh_bytes, RH_CAP, (unsigned long long)atomic_load(&g_rh_rejected), (unsigned long long)atomic_load(&g_rh_rejected_bytes));
     char avail[32] = "none";
 #if TARGET_OS_IPHONE
     snprintf(avail, sizeof avail, "%llu MB", (unsigned long long)(os_proc_available_memory() >> 20));
