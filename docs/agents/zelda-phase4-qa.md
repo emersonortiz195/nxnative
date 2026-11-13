@@ -266,6 +266,52 @@ test #5 separately last because it changes residency retirement. Combine only
 after those independent gates. A local compatibility rehearsal is not a new
 release candidate and never substitutes for the Mac gates.
 
+### Local-only compatibility rehearsal
+
+A detached scratch worktree combined QA commit `12ed2f14` with the exact #7,
+#6 and #5 commits above, in that order. Its final local commit was
+`4af6808a7b85f4186310874696e6ff1c21d7279c`. It was **not published** as a runtime
+candidate or merged into any source branch. Two textual conflicts were confined
+to additions under Ocarina's "Found on this game"; all three findings were
+retained. Renderer hunks merged without conflict. The regenerated symptom index
+was already consistent, and whitespace checks passed.
+
+**191 combined portable checks passed**, no errors/failures/skips, using:
+
+```sh
+DM_GAME=0400486024DEC000 python3 -W ignore::ResourceWarning -m unittest \
+  dm/tools/tests/test_regress.py dm/tools/tests/test_host_msl.py \
+  dm/tools/tests/test_usage.py dm/tools/tests/test_shader_compat.py \
+  dm/tools/tests/test_lint_python.py dm/tools/tests/test_docs.py \
+  dm/tools/tests/test_metal_cache_concurrency.py \
+  dm/tools/tests/test_shader_toolchain_cache.py dm/tools/tests/test_shader_lib.py \
+  dm/tools/tests/test_nsp_chain.py dm/tools/tests/test_gfx_tests_makefile.py \
+  dm/gfx/tests/test_fill_pattern.py
+```
+
+This validates synthetic ownership/initialization/compiler coordination and
+metadata/test compatibility only. It does not execute GPU command buffers or
+the delayed-upload-slot test. The combined tree still computes chain
+`3ae08e02ec6a`, preserves `hle_oe.c` and the upstream logging definition, and
+contains no `DM_M2_NO_FULL_POOL` reader.
+
+Read-only impact now runs on Linux for all proposals. At the reviewed revisions,
+#5 and #6 each reach 26 NVN/HLE entry points; three committed usage manifests
+match (Breath of the Wild, Tears of the Kingdom, Pokémon Scarlet), one is not
+affected and 154 profiles are unknown. #7 reaches those same three only through
+the broad shader-stage rule, with 154 unknown. "Unknown" must not be reported
+as unaffected. QA-only changes map to no game-runtime paths.
+
+Recommended five-game Mac coverage before runtime integration: Ocarina
+`0400486024DEC000` (target workload), Breath of the Wild `01007EF00011E000`,
+Tears of the Kingdom `0100F2C0115B6000`, Pokémon Scarlet `0100A3D008C5C000`
+(the three manifest matches), and Link's Awakening `01006BB00C6F0000` (repeated
+movie/texture uploads). All five remain unrun here: no game assets, Mac or GPU
+is available. Owners should use their existing matching-chain libraries and
+routes. Do not start `regress.py check`/`chain` if it would initiate a lengthy
+translation/rebuild; establish reusable harness inputs with the owners first.
+Static impact is not a substitute for these gameplay checks.
+
 Ready for independent review and Mac test preparation as a draft, not merging.
 No measured M2 FPS, peak-footprint, shader-stall or thermal improvement is
 claimed. Source proposals remain separate until their own Mac correctness
