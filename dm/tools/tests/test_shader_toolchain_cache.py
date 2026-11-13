@@ -233,8 +233,10 @@ class ShaderCache(unittest.TestCase):
         # the batches, then the loop that translates and finishes them (the translator and fin substituted)
         start = next(i for i, n in enumerate(self.tree.body) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'batches' for t in n.targets))
         end = next(i for i, n in enumerate(self.tree.body) if i > start and isinstance(n, ast.With)) + 1
-        work = Path(self.tmp.name) / 'work'
-        def translate(batch): work.mkdir(exist_ok=True); return str(work)
+        # Translation overlaps finishing, which removes each completed work
+        # directory. Match the real translator's distinct directory per batch:
+        # sharing one races mkdir against the preceding batch's rmtree.
+        def translate(batch): return tempfile.mkdtemp(prefix='batch-', dir=self.tmp.name)
         self.ns.update(cf=cf, NJ=1, BATCH=1, keys=keys, fin=lambda key, wb: finish_key(key), translate=translate)
         exec(compile(ast.Module(body=self.tree.body[start:end], type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
         self.assertEqual(built, [pixel, vertex])
@@ -359,6 +361,39 @@ class StageCache(unittest.TestCase):
         before = self.key(env)
         self.assertNotEqual(before, self.key(env, version='override Metal'))
         self.assertNotEqual(before, self.key(env, sdk='different SDK build'))
+
+
+class CompilerIdentity(unittest.TestCase):
+    def test_failed_probe_cannot_create_a_cache_identity(self):
+        for failed in range(4):
+            with self.subTest(probe=failed):
+                calls = []
+                def run(cmd, calls=calls, failed=failed, **kwargs):
+                    calls.append(cmd)
+                    self.assertTrue(kwargs.get('check'))
+                    if len(calls) == failed + 1:
+                        raise subprocess.CalledProcessError(1, cmd, stderr='Xcode unavailable')
+                    return subprocess.CompletedProcess(cmd, 0, stdout='version\n')
+                with mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=run):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        dmsh_mtlcache.compiler_id('macosx')
+
+    def test_empty_probe_cannot_create_a_cache_identity(self):
+        for empty in range(4):
+            results = [subprocess.CompletedProcess([], 0, stdout='version\n') for _ in range(4)]
+            results[empty] = subprocess.CompletedProcess([], 0, stdout=' \n')
+            with self.subTest(probe=empty), mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=results):
+                with self.assertRaises(ValueError):
+                    dmsh_mtlcache.compiler_id('macosx')
+
+    def test_success_keeps_existing_identity_and_ignores_install_path(self):
+        outputs = ['Apple metal version A\nInstalledDir: /first\n', 'metallib B\n', '27.2\n', 'build C\n']
+        def identify(path):
+            results = [subprocess.CompletedProcess([], 0, stdout=s.replace('/first', path)) for s in outputs]
+            with mock.patch.object(dmsh_mtlcache.subprocess, 'run', side_effect=results):
+                return dmsh_mtlcache.compiler_id('macosx')
+        self.assertEqual(identify('/first'), 'Apple metal version A\nmetallib B\n27.2\nbuild C\n')
+        self.assertEqual(identify('/first'), identify('/second'))
 
 
 class MetalPrefill(unittest.TestCase):
