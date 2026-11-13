@@ -42,6 +42,7 @@ int main(void) { @autoreleasepool {
     id<MTLSharedEvent> gate = [g_dev newSharedEvent];
     [g_q4 waitForEvent:gate value:1];
     for (unsigned i = 0; i < BATCHES; i++) {
+        __weak id<MTLBuffer> superseded = i == 3 ? g_up_slot_blk[0] : nil;
         if (i == 3) {
             CHECK("first slot still has pending GPU work", atomic_load(&g_up_alloc_busy[0]));
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100000000), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ gate.signaledValue = 1; });
@@ -49,6 +50,20 @@ int main(void) { @autoreleasepool {
         batch(i, i == BATCHES - 2 ? burst : i == BATCHES - 1 ? oversized : normal,
               i == BATCHES - 2 ? 4 : i == BATCHES - 1 ? 1 : 3, input, output);
         if (i == 3) CHECK("slot reuse waited for its pending upload", gate.signaledValue == 1);
+        if (i == 3 && up_reuse()) { @autoreleasepool {
+            // The first slot grows from 4 to 32 MiB after the gate opens.
+            // Its upload is done, but this rendering submission is still open.
+            // Holding the old staging until that render fence adds peak memory.
+            id<MTLBuffer> old = superseded;
+            pthread_mutex_lock(&g_res_mu);
+            CHECK("completed grown-out staging is no longer resident", !old || ![g_res_objects containsObject:old]);
+            pthread_mutex_unlock(&g_res_mu);
+            pthread_mutex_lock(&g_deferred_mu);
+            int held = 0;
+            for (NvDeferredRelease *entry in g_deferred) held |= old && entry->object == old;
+            CHECK("completed grown-out staging does not wait for rendering", !held);
+            pthread_mutex_unlock(&g_deferred_mu);
+        } }
         if (i == 5) warmed = g_up_blocks_new;
         if (i == BATCHES - 3) CHECK("warm batches avoid new staging allocations", up_reuse() ? g_up_blocks_new == warmed : g_up_blocks_new > warmed);
         // Drain periodically even in the baseline: its temporary allocations
