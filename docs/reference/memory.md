@@ -537,3 +537,11 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Cause:** a command buffer that fails with `Insufficient Memory` frees nothing, and the game submits the next one.
 - **Fix:** general (`nvn_mtl.m` `res_top_once`): 32 such failures within 60 s end the process with a red line, as the session cannot recover and the machine may not either.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md).
+
+### Previous buffer-fill patterns remain resident after replacement
+
+- **Symptom:** source inspection found that changing the 32-bit buffer-fill value creates and registers another 64 KiB pattern without retiring the previous pattern. No game memory measurement is available.
+- **Cause:** `mtl_sub_fill` replaced its static strong `pat` reference but left the old allocation registered with the residency set. Removing the reference alone does not remove that registration. Immediate removal is unsafe because copies already encoded in the current submission can still read the old pattern.
+- **Fix:** allocate and initialize the replacement before changing the cache, then register it and queue the previous pattern through `defer_obj_release` before assigning the new one. The normal next-submission fence covers the copies already encoded. Repeated equal values keep their existing pattern. A failed allocation leaves the previous cache/retirement state unchanged before the fatal error path.
+- **Check:** `test_pattern_retirement.py` executes the production initialization and retirement-fence body with a C resource model, including delayed completion, immutable earlier values, same-value reuse and allocation failure; a no-retirement negative control fails. The new current-source acceptance gate passes, while pinned historical PR #6 is explicitly checked as a missing-retirement negative control. Extended `t_copy_alias` holds GPU completion behind an event, validates old residency before completion, retirement afterward, and unchanged destination bytes including a partial final chunk. The native test must run on macOS in both direct and deferred encoding; it was not run on Linux.
+- **Found on:** source review for [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), chain `39eb2f781d07`; no gameplay or memory reduction claim.

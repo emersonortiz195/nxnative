@@ -176,6 +176,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - a game whose shaders read texture handles from memory wires far past the working set while a scene loads, with `Insufficient Memory` errors or a panic, and stutters when new textures stream in. With a limit on how many it makes, surfaces in shadow go near black instead. → [Shaders report which textures they read through a pool](../reference/memory.md#shaders-report-which-textures-they-read-through-a-pool)
 - memory pools that hold only shader code are in the residency set, though no shader reads them. In The Great Ace Attorney Chronicles, three shared buffers, about 5 MB: chunks of its 1,000 MB pool (`DM_CTL` `restop`: shared buffers 241 MB at 30 s, 236 MB with the fix). → [Pools that hold shader code made resident to key the shaders](../reference/memory.md#pools-that-hold-shader-code-made-resident-to-key-the-shaders)
 - the Mac grows unresponsive for hours, then panics, with the host still submitting work that fails. → [Repeated GPU out-of-memory failures end the game](../reference/memory.md#repeated-gpu-out-of-memory-failures-end-the-game)
+- source inspection found that changing the 32-bit buffer-fill value creates and registers another 64 KiB pattern without retiring the previous pattern. No game memory measurement is available. → [Previous buffer-fill patterns remain resident after replacement](../reference/memory.md#previous-buffer-fill-patterns-remain-resident-after-replacement)
 
 ## Threads
 

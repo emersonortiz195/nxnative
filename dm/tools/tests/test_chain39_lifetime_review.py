@@ -76,15 +76,24 @@ class UploadOwnershipReview(unittest.TestCase):
 
 
 class PatternAndHeapReview(unittest.TestCase):
-    @unittest.expectedFailure
-    def test_pr6_previous_pattern_has_deferred_retirement(self):
-        # Known failed acceptance gate: registering a replacement does not retire
-        # the old resident allocation. Do not count this as a fixed lifetime bug.
+    def test_current_pattern_has_deferred_retirement_before_replacement(self):
+        text = (ROOT / HOST).read_text()
+        fill = function(text, 'void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {')
+        replace = fill[fill.index('    enum { PAT = '):fill.index('    for (uint64_t off = ')]
+        self.assertIn('if (!next) MDIE(', replace)
+        self.assertLess(replace.index('if (!next) MDIE('), replace.index('res_add(next)'))
+        self.assertLess(replace.index('res_add(next)'), replace.index('defer_obj_release(pat)'))
+        self.assertLess(replace.index('defer_obj_release(pat)'), replace.index('pat = next'))
+        self.assertNotIn('res_remove(pat)', replace)
+
+    def test_historical_pr6_pattern_is_a_missing_retirement_negative_control(self):
+        # The pinned historical proposal is still broken. Current implementation
+        # acceptance is checked separately above; never relabel this source fixed.
         text = source(self, PR6)
         fill = function(text, 'void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {')
         replace = fill[fill.index('    enum { PAT = '):fill.index('    for (uint64_t off = ')]
         self.assertIn('res_add(pat)', replace)
-        self.assertRegex(replace, r'defer_obj_(?:release|at)\(pat\b')
+        self.assertNotRegex(replace, r'defer_obj_(?:release|at)\(pat\b')
 
     def test_chain39_image_heap_ownership_is_not_pr9_recycle_ownership(self):
         base, proposal = source(self, '04811a63'), source(self, PR9)

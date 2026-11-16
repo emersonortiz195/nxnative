@@ -115,7 +115,54 @@ static void shader_alias(void) {
     }
     atomic_fetch_sub(&g_big_n, 1); res_remove(a); res_remove(b); res_remove(io); res_remove(seed); a = b = nil; munmap(mem, pg);
 }
+static void fill_pattern_retirement(void) {
+    const size_t stride = 0x10000 + 16, n = 0x10000 + 12;
+    const size_t pg = getpagesize(), len = (4 * stride + pg - 1) & ~(pg - 1);
+    uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(mem != MAP_FAILED, "pattern destination allocated"); if (mem == MAP_FAILED) abort();
+    memset(mem, 0xa5, len); mtl_pool_add(mem, len);
+    NSHashTable *retired = [NSHashTable weakObjectsHashTable];
+    const uint32_t values[] = {0x11223344, 0x8899aabb, 0x8899aabb, 0xddeeff01};
+    id<MTLSharedEvent> gate = [g_dev newSharedEvent];
+    CHECK(gate != nil, "pattern completion gate allocated"); if (!gate) abort();
+    mtl_sub_begin(); [g_q4 waitForEvent:gate value:1];
+    uint64_t fence = g_fence + 1;
+    for (unsigned i = 0; i < 4; i++) mtl_sub_fill((uint64_t)(mem + i * stride), n, values[i]);
+    @autoreleasepool {
+        pthread_mutex_lock(&g_deferred_mu);
+        for (NvDeferredRelease *entry in g_deferred)
+            if (entry->fence == fence && [entry->object conformsToProtocol:@protocol(MTLBuffer)] &&
+                ((id<MTLBuffer>)entry->object).length == 0x10000) [retired addObject:entry->object];
+        pthread_mutex_unlock(&g_deferred_mu);
+        CHECK(retired.count >= 2, "changed patterns entered deferred retirement");
+        pthread_mutex_lock(&g_res_mu);
+        for (id old in retired.allObjects) CHECK([g_res_objects containsObject:old], "in-flight pattern stays resident");
+        pthread_mutex_unlock(&g_res_mu);
+    }
+    uint64_t committed = mtl_sub_commit();
+    CHECK(committed == fence, "pattern retirement names this submission");
+    CHECK(!mtl_wait(committed, 1000000), "pattern submission waits behind GPU gate");
+    gate.signaledValue = 1;
+    CHECK(mtl_wait(committed, 5000000000ull), "pattern submission completes after gate");
+    CHECK(!mtl_last_commit_error(), "pattern copies have no GPU error");
+    mtl_drain();
+    for (unsigned i = 0; i < 4; i++) {
+        int ok = 1;
+        for (size_t off = 0; off < n; off += 4) {
+            uint32_t value; memcpy(&value, mem + i * stride + off, 4);
+            if (value != values[i]) { ok = 0; break; }
+        }
+        CHECK(ok, "old and repeated pattern contents survive later fills and partial chunks");
+        for (size_t off = n; off < stride; off++) CHECK(mem[i * stride + off] == 0xa5, "partial fill preserves tail guard");
+    }
+    @autoreleasepool {
+        pthread_mutex_lock(&g_res_mu);
+        for (id old in retired.allObjects) CHECK(![g_res_objects containsObject:old], "completed old pattern no longer tracked resident");
+        pthread_mutex_unlock(&g_res_mu);
+    }
+    mtl_pool_del(mem); munmap(mem, len);
+}
 int main(void) { @autoreleasepool {
-    mtl_init(); separate_buffers(); sparse_copies(); shader_alias();
+    mtl_init(); separate_buffers(); sparse_copies(); shader_alias(); fill_pattern_retirement();
     printf("t_copy_alias: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
