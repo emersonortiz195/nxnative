@@ -11,6 +11,12 @@ import math
 METRICS = ('@frame_ms', '@presented_ms', '@gpu_ms', '@submit_ms', '@sync_ms', '@work_ms')
 
 
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse normally repeats rejected argv, which may contain private paths.
+        self.exit(2, 'Invalid arguments; use --help for capture-report usage.\n')
+
+
 def percentile(values, p):
     values = sorted(values)
     return values[max(0, math.ceil(len(values) * p) - 1)] if values else None
@@ -43,6 +49,9 @@ def summarize(lines, budget_ms=1000 / 30):
         raise ValueError('timestamps are not strictly increasing; use one capture per report')
     span = times[-1] - times[0]
     contiguous = all(b[0] == a[0] + 1 for a, b in zip(selected, selected[1:]))
+    rate = (len(selected) - 1) / span if span > 0 and contiguous else None
+    if rate is not None and not math.isfinite(rate):
+        raise ValueError('timestamp interval cannot produce a finite frame rate')
     metrics = {}
     for metric in METRICS:
         values = [r[metric] for _, r in selected if metric in r and
@@ -53,7 +62,7 @@ def summarize(lines, budget_ms=1000 / 30):
     return {'timestamped_frames': len(selected), 'observed_span_s': span,
             'duration_gate_1200s_met': span >= 1200,
             'frame_ids_contiguous': contiguous,
-            'observed_frame_rate': (len(selected) - 1) / span if span > 0 and contiguous else None,
+            'observed_frame_rate': rate,
             'frame_budget_ms': budget_ms,
             'over_budget_frames': sum(r.get('@frame_ms', 0) > budget_ms for _, r in selected),
             'dropped_presentations': sum(r.get('@presented_ms') == -1 for _, r in selected),
@@ -63,7 +72,7 @@ def summarize(lines, budget_ms=1000 / 30):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = SafeParser(prog='zelda_capture_report', description=__doc__)
     parser.add_argument('capture')
     parser.add_argument('--budget-ms', type=float, default=1000 / 30)
     args = parser.parse_args()

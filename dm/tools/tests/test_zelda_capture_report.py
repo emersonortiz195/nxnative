@@ -64,6 +64,32 @@ class CaptureReport(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertNotIn(tmp, result.stderr)
 
+    def test_argument_errors_never_echo_rejected_text(self):
+        for args in (['PRIVATE-path', '--unknown-PRIVATE'],
+                     ['PRIVATE-path', '--budget-ms', 'PRIVATE-value'], [],
+                     ['PRIVATE-path', 'PRIVATE-extra']):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn('PRIVATE', result.stderr + result.stdout)
+                self.assertNotIn('Traceback', result.stderr)
+        result = subprocess.run([sys.executable, str(SCRIPT), '--help'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('--budget-ms', result.stdout)
+
+    def test_finite_timestamps_cannot_emit_infinite_rate_or_traceback(self):
+        source = '1\t@t_s\t0\n2\t@t_s\t1e-320\n'
+        with self.assertRaises(ValueError):
+            report.summarize(source.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'PRIVATE.tsv'
+            path.write_text(source)
+            result = subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, '')
+            self.assertNotIn('PRIVATE', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

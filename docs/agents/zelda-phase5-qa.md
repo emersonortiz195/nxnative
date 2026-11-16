@@ -161,3 +161,66 @@ Current readiness: QA tooling is available for read-only capture reduction;
 runtime integration and M2 acceptance are blocked on chain compatibility,
 unpublished source changes and actual native testing. No FPS, memory or stability
 gain has been measured.
+
+## November 16 follow-up for the dedicated integration agent
+
+Integration is now owned by a separate task. This branch continues QA only and
+does not move or combine any runtime branch. Its original dependency remains
+Phase 3 `17020e54`; the capture-tool commit is `8906e6d8`. The follow-up touches
+only `scripts/zelda_capture_report.py`, `dm/tools/tests/test_zelda_capture_report.py`
+and this report. No overlap with `nvn_mtl.m`, allocator rings, upload slots,
+texture aliases, shader rewrites or chain files is introduced.
+
+Two own-code defects were fixed:
+
+- Argument parsing previously echoed rejected command-line values before the
+  sanitized runtime exception handler ran. A private path supplied as an extra
+  argument or malformed budget could therefore appear in stderr. A fixed-name
+  parser now emits generic argument errors without raw argv; normal `--help`
+  still works. Regression cases cover unknown flags, malformed budget, missing
+  capture and extra positional arguments.
+- Two finite timestamps separated by a subnormal interval could produce an
+  infinite observed rate. JSON serialization then failed outside the sanitized
+  error handler and printed a traceback. The reducer now rejects a nonfinite
+  computed rate before serialization. Both function-level and CLI checks verify
+  a generic exit-2 failure with no raw path or traceback.
+
+These are telemetry correctness/privacy fixes, with no runtime performance
+effect or new shader-chain dependency. The four earlier test methods plus two
+new ones pass (**6 total**). The combined command above now passes **44 tests**,
+with no errors/failures/skips. Changed-file Ruff and whitespace checks pass.
+Earlier PR #9 test/CI observations above are point-in-time evidence, not freshly
+rerun native results. The published branches were fetched for discovery; the
+dedicated integrator must review any new heads before selecting patches.
+
+### Upstream evidence corrections
+
+Reviewed the retrieved public issue bodies and discussion text, without copying
+private attachments or raw logs into this repository:
+
+- [Issue #2319](https://github.com/seedds/nxnative/issues/2319) is currently about
+  file-backed guest memory plus LRU eviction on an 8 GB M2 Air, for Fire Emblem
+  Fortune's Weave on another shader chain. It reports freezes/resets despite
+  lower footprint and hypothesizes page-in/locking interactions. The hypothesis
+  is not a verified root cause. This is not the border-register-pressure issue
+  named in the assignment; do not attribute a border shader fix to it.
+- [Issue #2321](https://github.com/seedds/nxnative/issues/2321) concerns intermittent
+  Breath of the Wild GPU hangs and access revocation on an M4, on another source
+  revision/chain. A prior longer run succeeded, so a short successful run is weak
+  evidence against intermittent resource/synchronization problems. It is not
+  direct evidence of an 8 GB M2 Ocarina defect or a validated remedy.
+- [Discussion #1789](https://github.com/seedds/nxnative/discussions/1789) describes
+  Ocarina's NDSR output cost remaining at its output resolution while internal
+  resolution changes, and reports matrix/gather work requiring shader rebuilds.
+  Some measurements are from M4/iPad hardware, not this target. It also records
+  experiments with reduced threadgroup memory and pass/queue changes that did
+  not help, and known GPU hangs/area-transition problems. These findings support
+  measuring stage costs and output resolution, not assuming all 720p modes or
+  newer-chip wins transfer to the M2. Do not rebuild or relabel the user's archive
+  to import those results under the current constraints.
+
+Handoff recommendation: take the QA fixes independently of runtime proposals;
+preserve unknown telemetry fields as unknown; verify native queue retirement and
+file-backed page-in behavior separately from accounting improvements. A lower
+memory number alone must not pass stability review. The `39eb2f781d07` versus
+`3ae08e02ec6a` compatibility blocker remains unresolved by these QA-only changes.
