@@ -3086,7 +3086,12 @@ static id<MTLBuffer> up_alloc(size_t n, size_t *off) {
         __strong id<MTLBuffer> *sb = &g_up_slot_blk[g_up_cur_slot];
         size_t demand = up_reuse() ? MAX(need, g_up_slot_want[g_up_cur_slot]) : need;
         size_t want = UP_SLOT_BLOCK; while (want < demand) want <<= 1;
-        if (*sb && (*sb).length < want) { defer_obj_release(*sb); *sb = nil; }   // the slot's previous batch has finished (up_begin waited for it)
+        // Only the first block of this batch can grow here. up_begin waited for
+        // this slot's previous upload to finish; its private staging is never
+        // read by rendering. Mid-batch switches still use g_up_keep below.
+        // Stop residency retention before allocating the replacement instead
+        // of tying this completed upload resource to the next rendering fence.
+        if (*sb && (*sb).length < want) { res_remove(*sb); *sb = nil; }
         if (!*sb) { *sb = [g_dev newBufferWithLength:want options:MTLResourceStorageModePrivate]; if (!*sb) MDIE("failed to create the swizzled-upload staging block %#zx", want); res_add(*sb); g_up_blocks_new++; }
         g_up_block = *sb; g_up_block_size = (*sb).length; g_up_block_off = 0;
         g_up_staging_bytes += (*sb).length;
