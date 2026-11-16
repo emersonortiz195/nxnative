@@ -116,6 +116,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2   # a pull request checks out its merge commit: HEAD^1 is the base branch it merges onto, the diff coverage's base
+      - name: Fetch pinned chain-39 review sources without changing checkout
+        run: >-
+          git fetch --no-tags --depth=1 origin
+          04811a634b7f9344e882129b0973dd493369dd62
+          6cfb79edb0127027323df9ec7e53fd5e57e4d9c6
+          3c2198152292f64cbedf06701c84b6381d4e8285
+          863e2ab1d2915b5ba36a47ebe237403b2c41cc22
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
@@ -171,6 +178,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Fetch pinned chain-39 review sources without changing checkout
+        run: >-
+          git fetch --no-tags --depth=1 origin
+          04811a634b7f9344e882129b0973dd493369dd62
+          6cfb79edb0127027323df9ec7e53fd5e57e4d9c6
+          3c2198152292f64cbedf06701c84b6381d4e8285
+          863e2ab1d2915b5ba36a47ebe237403b2c41cc22
       - name: Install the selected Xcode's Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain   # a separate component, not included in the xcode-27 image
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
